@@ -335,14 +335,14 @@ def build_atlas(
 
     # AtP Smoke Test
     try:
-        test_enc = tokenizer(corp[0], return_tensors="pt", truncation=True, max_length=config.max_length)
-        test_enc = {k: v.to(model_device(model)) for k, v in test_enc.items()}
+        _test = tokenizer(corp[0], return_tensors="pt", truncation=True, max_length=config.max_length)
+        _test = {k: v.to(model_device(model)) for k, v in _test.items()}
         model.zero_grad()
-        test_out = model(**test_enc, use_cache=False)
-        test_loss = F.cross_entropy(test_out.logits[0, :-1, :], test_enc["input_ids"][0, 1:])
-        test_loss.backward()
-        n_with_grad = sum(1 for p in model.parameters() if p.grad is not None and p.grad.abs().sum() > 0)
-        print(f"[atp-smoke] params with nonzero grad after backward: {n_with_grad}/{sum(1 for _ in model.parameters())}")
+        _out = model(**_test, use_cache=False)
+        F.cross_entropy(_out.logits[0, :-1], _test["input_ids"][0, 1:]).backward()
+        _n = sum(1 for p in model.parameters() if p.grad is not None and p.grad.abs().sum() > 0)
+        print(f"[atp-smoke] {_n}/{sum(1 for _ in model.parameters())} params with grad")
+        model.zero_grad()
     except Exception as e:
         print(f"[atp-smoke] FAILED: {e}")
 
@@ -443,7 +443,7 @@ def build_atlas(
                 + 0.35 * atp_n
                 + 0.20 * align_n
             )
-            bouncer_threshold = float(torch.quantile(composite, config.bouncer_composite_quantile))
+            bouncer_threshold = float(torch.quantile(composite, getattr(config, "bouncer_composite_quantile", 0.85)))
             bouncer_idx = [ki for ki in range(rank) if float(composite[ki]) > bouncer_threshold]
             scales = torch.ones(rank)
             for ki in bouncer_idx:

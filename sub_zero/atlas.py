@@ -129,7 +129,7 @@ class BrainAtlas:
 
     @classmethod
     def load(cls, path: str) -> "BrainAtlas":
-        payload = torch.load(path, map_location="cpu")
+        payload = torch.load(path, map_location="cpu", weights_only=False)
         if not isinstance(payload, dict):
             raise TypeError(f"BrainAtlas payload must be dict, got {type(payload)!r}")
         return cls.from_dict(payload)
