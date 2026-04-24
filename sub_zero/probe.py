@@ -22,8 +22,9 @@ class ProbeConfig:
     neutral_file: str = "neutral_stems.txt"
     authentic_file: str = "authentic_bella_samples.txt"
     red_team_file: str = "red_team_stems.txt"
-    max_prompts_per_class: int = 64
+    max_prompts_per_class: int = 32
     max_length: int = 256
+    batch_size: int = 8
     classifier_accuracy_floor: float = 0.55
     bouncer_wanda_ratio: float = 1.8
     bouncer_composite_quantile: float = 0.85
@@ -32,6 +33,7 @@ class ProbeConfig:
     sacred_top_k_percent: float = 0.50
     num_probe_batches: int = 5
     num_refusal_directions: int = 3
+    layer_limit: Optional[int] = None
 
 
 def _read_lines(path: Path, max_items: int) -> List[str]:
@@ -86,6 +88,7 @@ def _capture_forward(
     prompts: Sequence[str],
     layers: Sequence[torch.nn.Module],
     max_length: int,
+    batch_size: int = 8,
 ) -> Tuple[Dict[int, torch.Tensor], Dict[int, Dict[str, torch.Tensor]]]:
     device = model_device(model)
     hidden_size = int(getattr(model.config, "hidden_size", 0))
@@ -96,39 +99,92 @@ def _capture_forward(
         for i, layer in enumerate(layers)
     }
 
-    for prompt in prompts:
-        proj_inputs: Dict[Tuple[int, str], torch.Tensor] = {}
-        handles = []
-        for li, layer in enumerate(layers):
-            for pname, pmod in get_projection_map(layer).items():
-                def _mk(li=li, pname=pname):
-                    def _hook(_mod, inp, _out):
-                        x = inp[0]
-                        if isinstance(x, tuple):
-                            x = x[0]
-                        if isinstance(x, torch.Tensor):
-                            proj_inputs[(li, pname)] = x[0, -1, :].detach().float().cpu()
-                    return _hook
-                handles.append(pmod.register_forward_hook(_mk()))
+    # Prefer left-padding on real HF tokenizers so the last real token of every
+    # sample lands at position -1. Toy/minimal tokenizers may not support it —
+    # fall back to attention_mask-based indexing for the true last token.
+    orig_padding_side = getattr(tokenizer, "padding_side", None)
+    use_left_pad = hasattr(tokenizer, "padding_side")
+    if use_left_pad:
+        try:
+            tokenizer.padding_side = "left"
+        except Exception:
+            use_left_pad = False
+    if (
+        hasattr(tokenizer, "pad_token")
+        and getattr(tokenizer, "pad_token", None) is None
+        and getattr(tokenizer, "eos_token", None) is not None
+    ):
+        try:
+            tokenizer.pad_token = tokenizer.eos_token
+        except Exception:
+            pass
 
-        with torch.no_grad():
-            enc = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=max_length)
-            enc = {k: v.to(device) for k, v in enc.items()}
-            out = model(**enc, output_hidden_states=True, use_cache=False)
+    try:
+        for batch_start in range(0, len(prompts), max(1, int(batch_size))):
+            batch = list(prompts[batch_start:batch_start + max(1, int(batch_size))])
+            if not batch:
+                continue
 
-        for h in handles:
-            h.remove()
+            # Encode the batch first so we know where each sample's last real
+            # token lives (needed for the right-padded fallback path).
+            enc = tokenizer(
+                batch,
+                return_tensors="pt",
+                truncation=True,
+                padding=True,
+                max_length=max_length,
+            )
+            enc = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in enc.items()}
+            attention_mask = enc.get("attention_mask")
 
-        hs = list(out.hidden_states or [])
-        if not hs:
-            continue
-        for li in range(min(len(layers), len(hs) - 1)):
-            v = hs[li + 1][0, -1, :].detach().float().cpu()
-            if hidden_size == 0:
-                hidden_size = int(v.numel())
-            layer_rows[li].append(v)
-        for (li, pname), v in proj_inputs.items():
-            proj_rows[li][pname].append(v)
+            if use_left_pad or attention_mask is None:
+                def _last_slice(x: torch.Tensor) -> torch.Tensor:
+                    return x[:, -1, :]
+            else:
+                last_idx = (attention_mask.sum(dim=1) - 1).clamp(min=0)
+                def _last_slice(x: torch.Tensor, _li=last_idx) -> torch.Tensor:
+                    bs = x.shape[0]
+                    return x[torch.arange(bs, device=x.device), _li.to(x.device), :]
+
+            proj_inputs: Dict[Tuple[int, str], torch.Tensor] = {}
+            handles = []
+            for li, layer in enumerate(layers):
+                for pname, pmod in get_projection_map(layer).items():
+                    def _mk(li=li, pname=pname, _last=_last_slice):
+                        def _hook(_mod, inp, _out):
+                            x = inp[0]
+                            if isinstance(x, tuple):
+                                x = x[0]
+                            if isinstance(x, torch.Tensor) and x.ndim == 3:
+                                proj_inputs[(li, pname)] = _last(x).detach().float().cpu()
+                        return _hook
+                    handles.append(pmod.register_forward_hook(_mk()))
+
+            with torch.no_grad():
+                out = model(**enc, output_hidden_states=True, use_cache=False)
+
+            for h in handles:
+                h.remove()
+
+            hs = list(out.hidden_states or [])
+            if not hs:
+                continue
+            for li in range(min(len(layers), len(hs) - 1)):
+                # [batch, hidden] — one row per sample
+                v = _last_slice(hs[li + 1]).detach().float().cpu()
+                if hidden_size == 0:
+                    hidden_size = int(v.shape[-1])
+                for b in range(v.shape[0]):
+                    layer_rows[li].append(v[b])
+            for (li, pname), v in proj_inputs.items():
+                for b in range(v.shape[0]):
+                    proj_rows[li][pname].append(v[b])
+    finally:
+        if orig_padding_side is not None:
+            try:
+                tokenizer.padding_side = orig_padding_side
+            except Exception:
+                pass
 
     layer_out = {li: _stack_or_empty(rows, hidden_size) for li, rows in layer_rows.items()}
     proj_out: Dict[int, Dict[str, torch.Tensor]] = {}
@@ -286,8 +342,11 @@ def build_atlas(
         neu = auth
 
     layers   = resolve_layers(model)
+    if config.layer_limit is not None:
+        layers = layers[:config.layer_limit]
     n_layers = len(layers)
 
+    print(f"[sub-zero] probing {n_layers} layers" + (f" (capped at {config.layer_limit})" if config.layer_limit else ""))
     print(f"[sub-zero] layer 17 module keys: {[n for n, _ in layers[min(17, n_layers-1)].named_modules()][:20]}")
 
     if task_batches:
@@ -300,25 +359,30 @@ def build_atlas(
         n_sel = max(1, int(round(n_layers * config.sacred_top_k_percent)))
         sacred_layers = list(range(n_layers - n_sel, n_layers))
 
-    print("[sub-zero] stage 1/4: forward activation capture ...")
-    corp_h, corp_p = _capture_forward(model, tokenizer, corp,       layers, config.max_length)
-    auth_h, auth_p = _capture_forward(model, tokenizer, auth,       layers, config.max_length)
-    neu_h,  neu_p  = _capture_forward(model, tokenizer, neu,        layers, config.max_length)
-    red_h,  _      = _capture_forward(model, tokenizer, red or neu, layers, config.max_length)
+    print(f"[sub-zero] stage 1/4: forward activation capture (batch_size={config.batch_size}) ...")
+    corp_h, corp_p = _capture_forward(model, tokenizer, corp,       layers, config.max_length, config.batch_size)
+    auth_h, auth_p = _capture_forward(model, tokenizer, auth,       layers, config.max_length, config.batch_size)
+    neu_h,  neu_p  = _capture_forward(model, tokenizer, neu,        layers, config.max_length, config.batch_size)
+    red_h,  _      = _capture_forward(model, tokenizer, red or neu, layers, config.max_length, config.batch_size)
 
     hidden_size = int(next(iter(corp_h.values())).shape[-1])
 
-    print("[sub-zero] stage 2/4: SVD decomposition ...")
+    print("[sub-zero] stage 2/4: SVD decomposition (GPU if available) ...")
     proj_svd: Dict[int, Dict[str, Tuple[torch.Tensor, torch.Tensor, torch.Tensor]]] = {}
+    svd_device = model_device(model)
     for li in sacred_layers:
         proj_svd[li] = {}
         for pname, pmod in get_projection_map(layers[li]).items():
-            w = pmod.weight.detach().float().cpu()
+            w = pmod.weight.detach()
             if w.ndim != 2 or min(w.shape) < 2:
                 continue
             try:
-                u, s, vh = torch.linalg.svd(w, full_matrices=False)
-                proj_svd[li][pname] = (u, s, vh)
+                # fp32 for numerical stability; run on whatever device the model is on.
+                # torch.linalg.svd on CUDA is 10-50x faster than CPU for these sizes.
+                w_dev = w.to(device=svd_device, dtype=torch.float32)
+                u_d, s_d, vh_d = torch.linalg.svd(w_dev, full_matrices=False)
+                proj_svd[li][pname] = (u_d.cpu(), s_d.cpu(), vh_d.cpu())
+                del w_dev, u_d, s_d, vh_d
             except Exception:
                 continue
 
