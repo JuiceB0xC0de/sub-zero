@@ -26,8 +26,7 @@ class ProbeConfig:
     max_length: int = 256
     classifier_accuracy_floor: float = 0.55
     bouncer_wanda_ratio: float = 1.8
-    bouncer_atp_quantile: float = 0.75
-    bouncer_align_quantile: float = 0.60
+    bouncer_composite_quantile: float = 0.85
     dark_variance_quantile: float = 0.50
     refusal_angle_degrees: float = 60.0
     sacred_top_k_percent: float = 0.50
@@ -295,6 +294,8 @@ def build_atlas(
     layers   = resolve_layers(model)
     n_layers = len(layers)
 
+    print(f"[sub-zero] layer 17 module keys: {[n for n, _ in layers[min(17, n_layers-1)].named_modules()][:20]}")
+
     if task_batches:
         sacred_layers, _ = run_aletheia(
             model, task_batches=task_batches,
@@ -331,6 +332,19 @@ def build_atlas(
     model.train()
     for p in model.parameters():
         p.requires_grad_(True)
+
+    # AtP Smoke Test
+    try:
+        test_enc = tokenizer(corp[0], return_tensors="pt", truncation=True, max_length=config.max_length)
+        test_enc = {k: v.to(model_device(model)) for k, v in test_enc.items()}
+        model.zero_grad()
+        test_out = model(**test_enc, use_cache=False)
+        test_loss = F.cross_entropy(test_out.logits[0, :-1, :], test_enc["input_ids"][0, 1:])
+        test_loss.backward()
+        n_with_grad = sum(1 for p in model.parameters() if p.grad is not None and p.grad.abs().sum() > 0)
+        print(f"[atp-smoke] params with nonzero grad after backward: {n_with_grad}/{sum(1 for _ in model.parameters())}")
+    except Exception as e:
+        print(f"[atp-smoke] FAILED: {e}")
 
     print(f"[sub-zero] model training mode: {model.training}")
     print(f"[sub-zero] proj_svd layers: {list(proj_svd.keys())}")
@@ -424,22 +438,16 @@ def build_atlas(
             atp_n   = _norm01(atp.abs())
             align_n = _norm01(align)
 
-            ratio_thresh = config.bouncer_wanda_ratio
-            atp_thresh   = float(torch.quantile(atp_n,   config.bouncer_atp_quantile))
-            align_thresh = float(torch.quantile(align_n, config.bouncer_align_quantile))
-
-            cls_scores = 0.4 * _norm01(wanda_ratio) + 0.3 * atp_n + 0.3 * align_n
-
-            bouncer_idx = []
+            composite = (
+                0.45 * _norm01(wanda_ratio)
+                + 0.35 * atp_n
+                + 0.20 * align_n
+            )
+            bouncer_threshold = float(torch.quantile(composite, config.bouncer_composite_quantile))
+            bouncer_idx = [ki for ki in range(rank) if float(composite[ki]) > bouncer_threshold]
             scales = torch.ones(rank)
-            for ki in range(rank):
-                if (
-                    float(wanda_ratio[ki]) > ratio_thresh
-                    and float(atp_n[ki])   > atp_thresh
-                    and float(align_n[ki]) > align_thresh
-                ):
-                    bouncer_idx.append(ki)
-                    scales[ki] = 0.15
+            for ki in bouncer_idx:
+                scales[ki] = 0.15
 
             proj_dict = {
                 off: corp_h[off] @ corp_clean
