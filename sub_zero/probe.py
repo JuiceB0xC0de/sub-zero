@@ -163,9 +163,8 @@ def _capture_atp_gradients(
 
     n_pairs = min(len(corp_prompts), len(auth_prompts))
     for idx in range(n_pairs):
-        grad_store: Dict[Tuple[int, str], torch.Tensor] = {}
-        fwd_store: Dict[Tuple[int, str], torch.Tensor] = {}
-        handles = []
+        param_grads: Dict[Tuple[int, str], torch.Tensor] = {}
+        hooks = []
 
         for li, layer in enumerate(layers):
             if li not in proj_svd:
@@ -173,16 +172,11 @@ def _capture_atp_gradients(
             for pname, pmod in get_projection_map(layer).items():
                 if pname not in proj_svd[li]:
                     continue
-                def _mk_fwd(li=li, pname=pname):
-                    def _hook(_mod, inp, out):
-                        act = out[0] if isinstance(out, tuple) else out
-                        fwd_store[(li, pname)] = act[0, -1, :].detach().float().cpu()
-                        act.retain_grad()
-                        def _grad_hook(g):
-                            grad_store[(li, pname)] = g[0, -1, :].detach().float().cpu()
-                        act.register_hook(_grad_hook)
-                    return _hook
-                handles.append(pmod.register_forward_hook(_mk_fwd()))
+                def _mk(li=li, pname=pname, w=pmod.weight):
+                    def _hook(g):
+                        param_grads[(li, pname)] = g.detach().float().cpu()
+                    hooks.append(w.register_hook(_hook))
+                _mk()
 
         enc = tokenizer(corp_prompts[idx], return_tensors="pt", truncation=True, max_length=max_length)
         enc = {k: v.to(device) for k, v in enc.items()}
@@ -193,31 +187,31 @@ def _capture_atp_gradients(
         loss = F.cross_entropy(logits, targets)
         loss.backward()
 
-        for h in handles:
+        for h in hooks:
             h.remove()
 
         for li in range(len(layers)):
             if li not in proj_svd:
                 continue
             for pname in proj_svd[li]:
-                if (li, pname) not in grad_store:
+                g_w = param_grads.get((li, pname))
+                if g_w is None:
                     continue
-                g = grad_store[(li, pname)]
-                u, _, vh = proj_svd[li][pname]
+                
+                u, s, vh = proj_svd[li][pname]
                 c_act = corp_proj_acts[li].get(pname)
                 a_act = auth_proj_acts[li].get(pname)
-                if c_act is None or a_act is None:
+                
+                if c_act is None or a_act is None or c_act.shape[-1] != vh.shape[1]:
                     continue
-                if c_act.shape[-1] == vh.shape[1]:
-                    c_sv = (c_act @ vh.T).mean(0)
-                    a_sv = (a_act @ vh.T).mean(0)
-                else:
-                    continue
+                
+                c_sv = (c_act @ vh.T).mean(0)   # [rank]
+                a_sv = (a_act @ vh.T).mean(0)   # [rank]
                 diff = c_sv - a_sv
-                if g.shape[0] == u.shape[0]:
-                    g_sv = u.T @ g
-                else:
-                    g_sv = torch.ones(diff.shape[0])
+                
+                # Project weight grad into right-singular space: g_sv[k] = ||g_w @ vh[k]||
+                # g_w is [out_dim, in_dim], vh.T is [in_dim, rank]
+                g_sv = (g_w @ vh.T).norm(dim=0) # [rank]
                 atp_accum[li][pname].append(diff * g_sv)
 
     atp_out: Dict[int, Dict[str, torch.Tensor]] = {}
@@ -423,12 +417,18 @@ def build_atlas(
             if atp.shape[0] != rank:
                 atp = torch.zeros(rank)
 
-            if u.shape[0] == cone_dirs.shape[1]:
-                align = (cone_dirs @ u).abs().max(0).values
-            elif vh.shape[1] == cone_dirs.shape[1]:
-                align = (cone_dirs @ vh.T).abs().max(0).values
+            cone_in = cone_dirs  # [k, hidden_size]
+            if vh.shape[1] == cone_in.shape[1]:          # input space match
+                raw_align = (cone_in @ vh.T).abs()        # [k, rank]
+            elif u.shape[0] == cone_in.shape[1]:         # output space match
+                raw_align = (cone_in @ u).abs()           # [k, rank]
             else:
-                align = torch.zeros(rank)
+                # Fallback: project cone into whichever space is closer in dim
+                # by zero-padding or truncating cone to match vh input dim
+                d = vh.shape[1]
+                cone_trunc = cone_in[:, :d] if cone_in.shape[1] > d else F.pad(cone_in, (0, d - cone_in.shape[1]))
+                raw_align = (cone_trunc @ vh.T).abs()
+            align = raw_align.max(0).values              # [rank] — always
 
             def _norm01(t):
                 lo, hi = t.min(), t.max()
