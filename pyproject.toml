@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sub-zero"
+version = "0.1.0"
+description = "Sub-Zero hidden-dimension selective freezing toolkit"
+requires-python = ">=3.10"
+dependencies = [
+  "torch",
+  "numpy",
+]
+
+[project.scripts]
+sub-zero = "sub_zero.cli:main"
+
+[project.optional-dependencies]
+ml = ["scikit-learn"]
+
+[tool.setuptools]
+packages = ["sub_zero"]
