@@ -449,6 +449,29 @@ def build_atlas(
             for ki in bouncer_idx:
                 scales[ki] = 0.15
 
+            # --- DIAGNOSTIC: raw pre-normalization distributions -----------
+            # Purpose: verify whether the signal has meaningful structure
+            # before the _norm01 + quantile gate compresses it to fixed 15%.
+            # Keep until selection logic is calibrated, then remove.
+            raw_wr = wanda_ratio
+            raw_atp_abs = atp.abs()
+            raw_align_vec = align
+            def _q(t, q):
+                return float(torch.quantile(t.float(), q)) if t.numel() else 0.0
+            print(
+                f"    [RAW | L{li:>2} | {pname:<9}] "
+                f"wr[min={_q(raw_wr, 0.0):.2f} med={_q(raw_wr, 0.5):.2f} "
+                f"p90={_q(raw_wr, 0.9):.2f} max={_q(raw_wr, 1.0):.2f}]  "
+                f"atp[med={_q(raw_atp_abs, 0.5):.2e} p90={_q(raw_atp_abs, 0.9):.2e} "
+                f"max={_q(raw_atp_abs, 1.0):.2e}]  "
+                f"align[med={_q(raw_align_vec, 0.5):.3f} p90={_q(raw_align_vec, 0.9):.3f} "
+                f"max={_q(raw_align_vec, 1.0):.3f}]  "
+                f"composite[thresh={bouncer_threshold:.3f} "
+                f"max={float(composite.max()):.3f} "
+                f"unique={int(composite.unique().numel())}/{rank}]"
+            )
+            # ---------------------------------------------------------------
+
             proj_dict = {
                 off: corp_h[off] @ corp_clean
                 for off in (li - 1, li)
