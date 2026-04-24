@@ -331,6 +331,11 @@ def build_atlas(
     model.train()
     for p in model.parameters():
         p.requires_grad_(True)
+
+    print(f"[sub-zero] model training mode: {model.training}")
+    print(f"[sub-zero] proj_svd layers: {list(proj_svd.keys())}")
+    print(f"[sub-zero] corp prompts for atp: {len(corp)}, auth: {len(auth)}")
+
     atp_scores = _capture_atp_gradients(
         model, tokenizer, corp, auth, layers,
         corp_p, auth_p, proj_svd, config.max_length,
