@@ -460,7 +460,7 @@ def build_atlas(
                 proj_name=pname,
                 S=s,
                 bouncer_sv_indices=torch.tensor(bouncer_idx, dtype=torch.long),
-                per_direction_classifier_score=cls_scores,
+                per_direction_classifier_score=composite,
                 per_direction_wanda_score=wanda_corp,
                 per_direction_dark_variance=dark_var,
                 per_direction_target_scale=scales,
