@@ -34,6 +34,17 @@ class ProbeConfig:
     num_probe_batches: int = 5
     num_refusal_directions: int = 3
     layer_limit: Optional[int] = None
+    coherence_pass: bool = True
+    causal_validate: bool = True
+    causal_validate_batch: int = 4
+    causal_max_candidates: int = 20
+    causal_keep_quantile: float = 0.5
+    das_refine: bool = True
+    das_target_rank: int = 2
+    das_batch: int = 4
+    das_explained_floor: float = 0.05
+    das_min_scale: float = 0.15
+    das_probe_token_ids: Optional[List[int]] = None  # if set, project deltas to these tokens before SVD
 
 
 def _read_lines(path: Path, max_items: int) -> List[str]:
@@ -317,6 +328,377 @@ def _compute_refusal_cone(
 
 
 # ---------------------------------------------------------------------------
+# Stage 5 – cross-layer coherence repass
+# ---------------------------------------------------------------------------
+
+def _knee_select(scores: torch.Tensor, max_frac: float = 0.30) -> List[int]:
+    sorted_c, sort_idx = torch.sort(scores, descending=True)
+    n = sorted_c.numel()
+    if n < 4 or float(sorted_c[0] - sorted_c[-1]) <= 1e-6:
+        return sort_idx[: max(1, int(0.10 * n))].tolist()
+    xs = torch.linspace(0.0, 1.0, n)
+    ys = (sorted_c - sorted_c[-1]) / (sorted_c[0] - sorted_c[-1] + 1e-12)
+    dist = (ys + xs - 1.0).abs()
+    k_cut = int(torch.argmax(dist).item()) + 1
+    k_cut = max(1, min(k_cut, max(1, int(max_frac * n))))
+    return sort_idx[:k_cut].tolist()
+
+
+def _coherence_repass(
+    atlas_layers: Dict[int, "LayerAtlas"],
+    proj_svd: Dict[int, Dict[str, Tuple[torch.Tensor, torch.Tensor, torch.Tensor]]],
+    top_neighbor_frac: float = 0.30,
+    neighbor_cap: int = 64,
+) -> None:
+    """Multiply each direction's composite by neighbor-layer coherence, then re-knee.
+
+    Real bouncer pathways persist across consecutive layers. A right-singular
+    direction at layer L should align with at least one high-composite direction
+    in the same projection at L-1 or L+1. Lone hits get demoted; persistent
+    pathways get amplified.
+    """
+    for li, layer_at in list(atlas_layers.items()):
+        if li not in proj_svd:
+            continue
+        for pname, projat in layer_at.per_projection.items():
+            if pname not in proj_svd[li]:
+                continue
+            _, _, vh_l = proj_svd[li][pname]
+            composite = projat.per_direction_classifier_score
+            if composite.numel() == 0:
+                continue
+
+            neighbor_dirs: List[torch.Tensor] = []
+            for nb in (li - 1, li + 1):
+                if nb not in atlas_layers or nb not in proj_svd:
+                    continue
+                nb_proj = atlas_layers[nb].per_projection.get(pname)
+                if nb_proj is None or pname not in proj_svd[nb]:
+                    continue
+                _, _, vh_nb = proj_svd[nb][pname]
+                if vh_nb.shape[1] != vh_l.shape[1]:
+                    continue
+                nb_score = nb_proj.per_direction_classifier_score
+                n_top = min(int(top_neighbor_frac * nb_score.numel()), neighbor_cap, nb_score.numel())
+                if n_top <= 0:
+                    continue
+                top_idx = torch.topk(nb_score, n_top).indices
+                neighbor_dirs.append(vh_nb[top_idx])
+
+            if not neighbor_dirs:
+                continue
+
+            nbm = torch.cat(neighbor_dirs, dim=0).float()         # [N, in_dim]
+            sim = (vh_l.float() @ nbm.T).abs()                    # [rank, N]
+            coh = sim.max(dim=1).values                           # [rank]
+            multiplier = 0.5 + 0.5 * coh
+            new_composite = composite * multiplier
+
+            new_idx = _knee_select(new_composite)
+            rank = projat.S.numel()
+            new_scales = torch.ones(rank)
+            for ki in new_idx:
+                new_scales[ki] = 0.15
+
+            projat.per_direction_classifier_score = new_composite
+            projat.bouncer_sv_indices = torch.tensor(new_idx, dtype=torch.long)
+            projat.per_direction_target_scale = new_scales
+            print(
+                f"  [coherence | L{li:>2} | {pname:<8}] "
+                f"coh_max={float(coh.max()):.3f}  bouncers→{len(new_idx)}/{rank}"
+            )
+
+
+# ---------------------------------------------------------------------------
+# Stage 6 – causal ablation gate
+# ---------------------------------------------------------------------------
+
+def _causal_validate(
+    model: torch.nn.Module,
+    tokenizer,
+    layers: Sequence[torch.nn.Module],
+    atlas_layers: Dict[int, "LayerAtlas"],
+    proj_svd: Dict[int, Dict[str, Tuple[torch.Tensor, torch.Tensor, torch.Tensor]]],
+    corp_prompts: Sequence[str],
+    auth_prompts: Sequence[str],
+    max_length: int,
+    batch: int = 4,
+    max_candidates: int = 20,
+    keep_quantile: float = 0.5,
+) -> None:
+    """Forward-pre-hook ablation: project candidate direction out of the projection
+    input, then measure loss shift on corp vs auth. Real bouncers should:
+      - INCREASE corp loss when ablated (direction was load-bearing for compliance)
+      - DECREASE auth loss when ablated (direction was suppressing authentic voice)
+    Score = (auth_clean - auth_abl) + (corp_abl - corp_clean). Positive = causal.
+    """
+    device = model_device(model)
+    if (
+        hasattr(tokenizer, "pad_token")
+        and getattr(tokenizer, "pad_token", None) is None
+        and getattr(tokenizer, "eos_token", None) is not None
+    ):
+        try:
+            tokenizer.pad_token = tokenizer.eos_token
+        except Exception:
+            pass
+
+    def _enc(prompts):
+        e = tokenizer(list(prompts), return_tensors="pt", truncation=True,
+                      padding=True, max_length=max_length)
+        return {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in e.items()}
+
+    corp_enc = _enc(corp_prompts[: max(1, batch)])
+    auth_enc = _enc(auth_prompts[: max(1, batch)])
+
+    def _loss(enc):
+        with torch.no_grad():
+            out = model(**enc, use_cache=False)
+        logits = out.logits[..., :-1, :].float()
+        targets = enc["input_ids"][..., 1:]
+        return float(F.cross_entropy(
+            logits.reshape(-1, logits.shape[-1]),
+            targets.reshape(-1),
+            reduction="mean",
+        ).item())
+
+    corp_clean = _loss(corp_enc)
+    auth_clean = _loss(auth_enc)
+    print(f"  [causal] baseline  corp_loss={corp_clean:.4f}  auth_loss={auth_clean:.4f}")
+
+    for li, layer_at in list(atlas_layers.items()):
+        if li not in proj_svd:
+            continue
+        for pname, projat in layer_at.per_projection.items():
+            if pname not in proj_svd[li]:
+                continue
+            _, _, vh = proj_svd[li][pname]
+            pmod_map = get_projection_map(layers[li])
+            pmod = pmod_map.get(pname)
+            if pmod is None:
+                continue
+
+            cand = projat.bouncer_sv_indices.tolist()
+            if not cand:
+                continue
+            cand = cand[: max_candidates]
+
+            scored: List[Tuple[int, float]] = []
+            for sv_idx in cand:
+                v_cpu = vh[sv_idx].float()
+
+                def _pre_hook(_m, args, _v=v_cpu):
+                    if not args:
+                        return None
+                    x = args[0]
+                    if not isinstance(x, torch.Tensor):
+                        return None
+                    v_dt = _v.to(dtype=x.dtype, device=x.device)
+                    coeff = x @ v_dt
+                    proj = coeff.unsqueeze(-1) * v_dt
+                    return (x - proj,) + tuple(args[1:])
+
+                handle = pmod.register_forward_pre_hook(_pre_hook)
+                try:
+                    corp_abl = _loss(corp_enc)
+                    auth_abl = _loss(auth_enc)
+                finally:
+                    handle.remove()
+
+                score = (auth_clean - auth_abl) + (corp_abl - corp_clean)
+                scored.append((int(sv_idx), float(score)))
+
+            if not scored:
+                continue
+            arr = torch.tensor([s for _, s in scored])
+            tau = max(0.0, float(torch.quantile(arr, keep_quantile)))
+            kept = [sv for (sv, s) in scored if s > tau]
+            if not kept:
+                kept = [max(scored, key=lambda x: x[1])[0]]
+
+            rank = projat.S.numel()
+            new_scales = torch.ones(rank)
+            for ki in kept:
+                new_scales[ki] = 0.15
+            projat.bouncer_sv_indices = torch.tensor(kept, dtype=torch.long)
+            projat.per_direction_target_scale = new_scales
+
+            print(
+                f"  [causal | L{li:>2} | {pname:<8}] "
+                f"{len(cand)} → {len(kept)} kept "
+                f"(τ={tau:+.4f}, max={float(arr.max()):+.4f}, "
+                f"min={float(arr.min()):+.4f})"
+            )
+
+
+# ---------------------------------------------------------------------------
+# Stage 7 – DAS rotation gate (SVD of per-candidate logit deltas)
+# ---------------------------------------------------------------------------
+
+def _last_position_logits(model: torch.nn.Module, enc: Dict[str, torch.Tensor]) -> torch.Tensor:
+    """Return [B, vocab] logits at each sample's last real (non-pad) position."""
+    with torch.no_grad():
+        out = model(**enc, use_cache=False)
+    logits = out.logits.float()                                 # [B, S, V]
+    am = enc.get("attention_mask")
+    if am is None:
+        return logits[:, -1, :]
+    last_idx = (am.sum(dim=1) - 1).clamp(min=0).to(logits.device)
+    bs = logits.shape[0]
+    return logits[torch.arange(bs, device=logits.device), last_idx, :]
+
+
+def _das_refine(
+    model: torch.nn.Module,
+    tokenizer,
+    layers: Sequence[torch.nn.Module],
+    atlas_layers: Dict[int, "LayerAtlas"],
+    proj_svd: Dict[int, Dict[str, Tuple[torch.Tensor, torch.Tensor, torch.Tensor]]],
+    auth_prompts: Sequence[str],
+    max_length: int,
+    batch: int = 4,
+    target_rank: int = 2,
+    explained_floor: float = 0.05,
+    min_scale: float = 0.15,
+    probe_token_ids: Optional[List[int]] = None,
+) -> None:
+    """SVD of per-candidate logit-shift matrix. Finds non-axis-aligned causal axes
+    within the surviving bouncer subspace.
+
+    For each (layer, projection) with surviving candidates v_1..v_k:
+      Δ_i = mean over auth batch of [logit_clean - logit_ablated_i]   ∈ R^vocab
+      Δ   = stack(Δ_i)                                                ∈ R^[k, vocab]
+      U Σ Vᵀ = svd(Δ)
+      DAS basis = Uᵀ[:r] @ vh[bouncer_sv_indices]                     ∈ R^[r, in_dim]
+
+    Σ²/Σ Σ² gives explained-causal-variance ratio. Drop axes below explained_floor.
+    """
+    if not auth_prompts:
+        return
+    device = model_device(model)
+    if (
+        hasattr(tokenizer, "pad_token")
+        and getattr(tokenizer, "pad_token", None) is None
+        and getattr(tokenizer, "eos_token", None) is not None
+    ):
+        try:
+            tokenizer.pad_token = tokenizer.eos_token
+        except Exception:
+            pass
+
+    enc = tokenizer(
+        list(auth_prompts[: max(1, batch)]),
+        return_tensors="pt", truncation=True, padding=True, max_length=max_length,
+    )
+    enc = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in enc.items()}
+    clean_logits = _last_position_logits(model, enc)             # [B, V]
+    # Optional probe-token projection: shrinks vocab dim from ~256k → |probe|.
+    # Use a curated refusal/compliance token set when memory matters.
+    probe_idx = (
+        torch.tensor(probe_token_ids, dtype=torch.long, device=clean_logits.device)
+        if probe_token_ids else None
+    )
+    if probe_idx is not None:
+        clean_logits = clean_logits.index_select(-1, probe_idx)
+
+    for li, layer_at in list(atlas_layers.items()):
+        if li not in proj_svd:
+            continue
+        for pname, projat in layer_at.per_projection.items():
+            if pname not in proj_svd[li]:
+                continue
+            _, _, vh = proj_svd[li][pname]
+            pmod = get_projection_map(layers[li]).get(pname)
+            if pmod is None:
+                continue
+
+            cand = projat.bouncer_sv_indices.tolist()
+            if len(cand) < 2:
+                # nothing to rotate — single direction is its own basis
+                if len(cand) == 1:
+                    v = vh[cand[0]].float().unsqueeze(0)         # [1, in_dim]
+                    projat.bouncer_das_basis = v / v.norm(dim=-1, keepdim=True).clamp(min=1e-12)
+                    projat.bouncer_das_explained = torch.ones(1)
+                    projat.bouncer_das_singular_values = torch.ones(1)
+                    projat.bouncer_das_weights = torch.eye(1)
+                    projat.bouncer_das_target_scale = torch.tensor([min_scale])
+                continue
+
+            deltas: List[torch.Tensor] = []
+            for sv_idx in cand:
+                v_cpu = vh[sv_idx].float()
+
+                def _pre_hook(_m, args, _v=v_cpu):
+                    if not args:
+                        return None
+                    x = args[0]
+                    if not isinstance(x, torch.Tensor):
+                        return None
+                    v_dt = _v.to(dtype=x.dtype, device=x.device)
+                    coeff = x @ v_dt
+                    proj = coeff.unsqueeze(-1) * v_dt
+                    return (x - proj,) + tuple(args[1:])
+
+                handle = pmod.register_forward_pre_hook(_pre_hook)
+                try:
+                    abl_logits = _last_position_logits(model, enc)
+                finally:
+                    handle.remove()
+
+                if probe_idx is not None:
+                    abl_logits = abl_logits.index_select(-1, probe_idx)
+                # mean across batch, sign convention: clean - ablated
+                # (positive components = tokens whose logit DROPPED when bouncer ablated)
+                delta = (clean_logits - abl_logits).mean(dim=0).cpu()
+                deltas.append(delta)
+
+            D = torch.stack(deltas, dim=0).float()               # [k, V]
+            try:
+                U, S, _ = torch.linalg.svd(D, full_matrices=False)
+            except Exception as e:
+                print(f"  [das | L{li:>2} | {pname:<8}] svd failed: {e}")
+                continue
+
+            total = float((S ** 2).sum().clamp(min=1e-12))
+            explained = (S ** 2) / total                         # [min(k, V)]
+
+            r_max = min(target_rank, U.shape[1])
+            r = 0
+            for j in range(r_max):
+                if float(explained[j]) >= explained_floor:
+                    r += 1
+                else:
+                    break
+            r = max(1, r)
+
+            W = U[:, :r]                                          # [k, r]
+            B = vh[cand].float()                                  # [k, in_dim]
+            das_basis = W.T @ B                                   # [r, in_dim]
+            das_basis = das_basis / das_basis.norm(dim=-1, keepdim=True).clamp(min=1e-12)
+
+            # Per-axis attenuation: axes carrying more causal variance get
+            # attenuated harder (toward min_scale). Trailing axes get gentler
+            # treatment to preserve capability.  scale_r = 1 - (1 - min) * explained_r
+            target_scale = (1.0 - (1.0 - min_scale) * explained[:r]).clamp(
+                min=min_scale, max=1.0
+            )
+
+            projat.bouncer_das_basis = das_basis
+            projat.bouncer_das_explained = explained[:r].clone()
+            projat.bouncer_das_singular_values = S[:r].clone()
+            projat.bouncer_das_weights = W.T.contiguous()         # [r, k]
+            projat.bouncer_das_target_scale = target_scale
+
+            exp_str = ", ".join(f"{float(e):.2%}" for e in explained[:r])
+            scale_str = ", ".join(f"{float(s):.2f}" for s in target_scale)
+            cum = float(explained[:r].sum())
+            print(
+                f"  [das | L{li:>2} | {pname:<8}] k={len(cand)} → r={r}  "
+                f"explained=[{exp_str}]  cum={cum:.1%}  scales=[{scale_str}]"
+            )
+
+
+# ---------------------------------------------------------------------------
 # Main build function
 # ---------------------------------------------------------------------------
 
@@ -486,17 +868,25 @@ def build_atlas(
                 atp = torch.zeros(rank)
 
             cone_in = cone_dirs  # [k, hidden_size]
-            if vh.shape[1] == cone_in.shape[1]:          # input space match
-                raw_align = (cone_in @ vh.T).abs()        # [k, rank]
-            elif u.shape[0] == cone_in.shape[1]:         # output space match
-                raw_align = (cone_in @ u).abs()           # [k, rank]
+            # Pick the correct geometric space for this projection: vh acts on input
+            # (in_dim), u acts on output (out_dim). Match cone to the right one.
+            if vh.shape[1] == cone_in.shape[1]:
+                basis_target = vh.T                       # [in_dim, rank]
+            elif u.shape[0] == cone_in.shape[1]:
+                basis_target = u                          # [out_dim, rank]
             else:
-                # Fallback: project cone into whichever space is closer in dim
-                # by zero-padding or truncating cone to match vh input dim
                 d = vh.shape[1]
-                cone_trunc = cone_in[:, :d] if cone_in.shape[1] > d else F.pad(cone_in, (0, d - cone_in.shape[1]))
-                raw_align = (cone_trunc @ vh.T).abs()
-            align = raw_align.max(0).values              # [rank] — always
+                cone_in = cone_in[:, :d] if cone_in.shape[1] > d else F.pad(cone_in, (0, d - cone_in.shape[1]))
+                basis_target = vh.T
+            # Subspace projection: orthonormalize cone via QR, then per-SV-direction
+            # alignment = ||Q @ v_k|| (norm of projection onto cone span), not max
+            # cosine to any single centroid. Treats refusal as the subspace it is.
+            try:
+                Q, _ = torch.linalg.qr(cone_in.T.float())  # Q: [hidden, k']
+                proj = Q.T @ basis_target.float()          # [k', rank]
+                align = proj.pow(2).sum(0).sqrt().clamp(max=1.0)  # [rank]
+            except Exception:
+                align = (cone_in.float() @ basis_target.float()).abs().max(0).values
 
             def _norm01(t):
                 lo, hi = t.min(), t.max()
@@ -511,8 +901,24 @@ def build_atlas(
                 + 0.35 * atp_n
                 + 0.20 * align_n
             )
-            bouncer_threshold = float(torch.quantile(composite, getattr(config, "bouncer_composite_quantile", 0.85)))
-            bouncer_idx = [ki for ki in range(rank) if float(composite[ki]) > bouncer_threshold]
+            # Adaptive: knee-point on sorted composite (max distance from chord
+            # connecting first to last point). Falls back to fixed quantile when
+            # the curve is too flat to have a meaningful knee.
+            sorted_c, sort_idx = torch.sort(composite, descending=True)
+            n = sorted_c.numel()
+            if n >= 4 and float(sorted_c[0] - sorted_c[-1]) > 1e-6:
+                xs = torch.linspace(0.0, 1.0, n)
+                ys = (sorted_c - sorted_c[-1]) / (sorted_c[0] - sorted_c[-1] + 1e-12)
+                # distance from each (xs[i], ys[i]) to the chord y = 1 - x
+                dist = (ys + xs - 1.0).abs()
+                k_cut = int(torch.argmax(dist).item()) + 1
+                # Guard rails: never accept more than 30% or fewer than 1
+                k_cut = max(1, min(k_cut, max(1, int(0.30 * n))))
+                bouncer_threshold = float(sorted_c[k_cut - 1])
+                bouncer_idx = sort_idx[:k_cut].tolist()
+            else:
+                bouncer_threshold = float(torch.quantile(composite, getattr(config, "bouncer_composite_quantile", 0.85)))
+                bouncer_idx = [ki for ki in range(rank) if float(composite[ki]) > bouncer_threshold]
             scales = torch.ones(rank)
             for ki in bouncer_idx:
                 scales[ki] = 0.15
@@ -578,6 +984,34 @@ def build_atlas(
             per_projection=per_projection,
             activation_histogram=class_hist,
             classifier_accuracy=fit.classifier_accuracy,
+        )
+
+    if getattr(config, "coherence_pass", True):
+        print("[sub-zero] stage 5/6: cross-layer coherence repass ...")
+        _coherence_repass(atlas_layers, proj_svd)
+
+    if getattr(config, "causal_validate", True):
+        print("[sub-zero] stage 6/7: causal ablation gate ...")
+        _causal_validate(
+            model, tokenizer, layers, atlas_layers, proj_svd,
+            corp_prompts=corp, auth_prompts=auth,
+            max_length=config.max_length,
+            batch=getattr(config, "causal_validate_batch", 4),
+            max_candidates=getattr(config, "causal_max_candidates", 20),
+            keep_quantile=getattr(config, "causal_keep_quantile", 0.5),
+        )
+
+    if getattr(config, "das_refine", True):
+        print("[sub-zero] stage 7/7: DAS rotation gate ...")
+        _das_refine(
+            model, tokenizer, layers, atlas_layers, proj_svd,
+            auth_prompts=auth,
+            max_length=config.max_length,
+            batch=getattr(config, "das_batch", 4),
+            target_rank=getattr(config, "das_target_rank", 2),
+            explained_floor=getattr(config, "das_explained_floor", 0.05),
+            min_scale=getattr(config, "das_min_scale", 0.15),
+            probe_token_ids=getattr(config, "das_probe_token_ids", None),
         )
 
     atlas = BrainAtlas(

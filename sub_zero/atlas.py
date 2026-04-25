@@ -17,9 +17,18 @@ class ProjectionAtlas:
     per_direction_dark_variance: torch.Tensor
     per_direction_target_scale: torch.Tensor
     origin_layer: Dict[int, int] = field(default_factory=dict)
+    # DAS rotation gate — principal causal axes within the bouncer subspace.
+    # Each row is a unit direction in the projection's INPUT space, recoverable
+    # as a linear combo of vh[bouncer_sv_indices]. None when DAS pass is off
+    # or the candidate set was too small to decompose.
+    bouncer_das_basis: "torch.Tensor | None" = None
+    bouncer_das_explained: "torch.Tensor | None" = None    # variance ratios S²/ΣS²
+    bouncer_das_singular_values: "torch.Tensor | None" = None  # raw S
+    bouncer_das_weights: "torch.Tensor | None" = None      # [r, k] mixing matrix
+    bouncer_das_target_scale: "torch.Tensor | None" = None # [r] per-axis attenuation
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        d = {
             "proj_name": self.proj_name,
             "S": self.S.detach().cpu(),
             "bouncer_sv_indices": self.bouncer_sv_indices.detach().cpu(),
@@ -29,6 +38,17 @@ class ProjectionAtlas:
             "per_direction_target_scale": self.per_direction_target_scale.detach().cpu(),
             "origin_layer": {int(k): int(v) for k, v in self.origin_layer.items()},
         }
+        if self.bouncer_das_basis is not None:
+            d["bouncer_das_basis"] = self.bouncer_das_basis.detach().cpu()
+        if self.bouncer_das_explained is not None:
+            d["bouncer_das_explained"] = self.bouncer_das_explained.detach().cpu()
+        if self.bouncer_das_singular_values is not None:
+            d["bouncer_das_singular_values"] = self.bouncer_das_singular_values.detach().cpu()
+        if self.bouncer_das_weights is not None:
+            d["bouncer_das_weights"] = self.bouncer_das_weights.detach().cpu()
+        if self.bouncer_das_target_scale is not None:
+            d["bouncer_das_target_scale"] = self.bouncer_das_target_scale.detach().cpu()
+        return d
 
     @classmethod
     def from_dict(cls, payload: Dict[str, Any]) -> "ProjectionAtlas":
@@ -41,6 +61,11 @@ class ProjectionAtlas:
             per_direction_dark_variance=payload["per_direction_dark_variance"],
             per_direction_target_scale=payload["per_direction_target_scale"],
             origin_layer={int(k): int(v) for k, v in dict(payload.get("origin_layer", {})).items()},
+            bouncer_das_basis=payload.get("bouncer_das_basis"),
+            bouncer_das_explained=payload.get("bouncer_das_explained"),
+            bouncer_das_singular_values=payload.get("bouncer_das_singular_values"),
+            bouncer_das_weights=payload.get("bouncer_das_weights"),
+            bouncer_das_target_scale=payload.get("bouncer_das_target_scale"),
         )
 
 
