@@ -387,6 +387,10 @@ def build_atlas(
                 continue
 
     print("[sub-zero] stage 3/4: AtP gradient probe ...")
+    # free activation tensors we don't need for AtP before enabling grads
+    del neu_h, neu_p, red_h
+    torch.cuda.empty_cache()
+
     model.train()
     for p in model.parameters():
         p.requires_grad_(True)
