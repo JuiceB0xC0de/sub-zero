@@ -1,5 +1,7 @@
 # sub-zero
 
+> ⚠️ **Work in progress — incomplete.** This repository is an active research prototype, not a finished tool. The probe pipeline runs end-to-end, but the applicator/training-integration boundary still has known gaps, the gate thresholds are tuned to a single Gemma-4-E2B-it run, and no public stability or correctness guarantees are made. Expect breaking changes, partial documentation, and rough edges throughout. If you are reading this looking for a stable interpretability tool, this isn't one yet.
+
 Sub-Zero implementation package for hidden-dimension selective freezing.
 
 ## Modules
