@@ -26,6 +26,10 @@ class ProjectionAtlas:
     bouncer_das_singular_values: "torch.Tensor | None" = None  # raw S
     bouncer_das_weights: "torch.Tensor | None" = None      # [r, k] mixing matrix
     bouncer_das_target_scale: "torch.Tensor | None" = None # [r] per-axis attenuation
+    # Stage 8 — capability orthogonality profile (per-axis loss-shift on capability corpora)
+    bouncer_das_capability_profile: "Dict[str, torch.Tensor] | None" = None  # name → [r] tensor of |Δloss|
+    bouncer_das_capability_damage: "torch.Tensor | None" = None  # [r] max |Δloss| over corpora
+    bouncer_das_capability_passed: "torch.Tensor | None" = None  # [r] bool — capability-orthogonal
 
     def to_dict(self) -> Dict[str, Any]:
         d = {
@@ -48,6 +52,14 @@ class ProjectionAtlas:
             d["bouncer_das_weights"] = self.bouncer_das_weights.detach().cpu()
         if self.bouncer_das_target_scale is not None:
             d["bouncer_das_target_scale"] = self.bouncer_das_target_scale.detach().cpu()
+        if self.bouncer_das_capability_profile is not None:
+            d["bouncer_das_capability_profile"] = {
+                k: v.detach().cpu() for k, v in self.bouncer_das_capability_profile.items()
+            }
+        if self.bouncer_das_capability_damage is not None:
+            d["bouncer_das_capability_damage"] = self.bouncer_das_capability_damage.detach().cpu()
+        if self.bouncer_das_capability_passed is not None:
+            d["bouncer_das_capability_passed"] = self.bouncer_das_capability_passed.detach().cpu()
         return d
 
     @classmethod
@@ -66,6 +78,9 @@ class ProjectionAtlas:
             bouncer_das_singular_values=payload.get("bouncer_das_singular_values"),
             bouncer_das_weights=payload.get("bouncer_das_weights"),
             bouncer_das_target_scale=payload.get("bouncer_das_target_scale"),
+            bouncer_das_capability_profile=payload.get("bouncer_das_capability_profile"),
+            bouncer_das_capability_damage=payload.get("bouncer_das_capability_damage"),
+            bouncer_das_capability_passed=payload.get("bouncer_das_capability_passed"),
         )
 
 

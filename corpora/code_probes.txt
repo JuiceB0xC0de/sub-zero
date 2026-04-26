@@ -1,0 +1,63 @@
+def is_prime(n):
+    if n < 2:
+        return False
+    for i in range(2, int(n**0.5) + 1):
+        if n % i == 0:
+            return
+def fibonacci(n):
+    if n <= 1:
+        return n
+    return fibonacci(n - 1) +
+def reverse_string(s: str) -> str:
+    return s[::
+class Stack:
+    def __init__(self):
+        self.items = []
+    def push(self, item):
+        self.items.
+def binary_search(arr, target):
+    left, right = 0, len(arr) -
+import numpy as np
+arr = np.array([[1, 2], [3, 4]])
+print(arr.
+async function fetchUser(id) {
+  const response = await fetch(`/api/users/${id}`);
+  return response.
+const numbers = [1, 2, 3, 4, 5];
+const doubled = numbers.map(n =>
+public class Calculator {
+    public int add(int a, int b) {
+        return a +
+SELECT name, age FROM users WHERE age >= 18 ORDER BY
+def factorial(n):
+    return 1 if n == 0 else n * factorial(n -
+with open('data.txt', 'r') as f:
+    lines = f.read
+import torch
+x = torch.randn(3, 4)
+y = x.transpose(0,
+def quicksort(arr):
+    if len(arr) <= 1:
+        return arr
+    pivot = arr[len(arr) //
+HashMap<String, Integer> counts = new HashMap<>();
+counts.put("apple",
+type Result<T, E> = { ok: true; value: T } | { ok: false; error:
+def matrix_multiply(a, b):
+    rows_a, cols_a = len(a), len(a[0])
+    rows_b, cols_b = len(b), len(b[
+git commit -m "fix: handle empty input in
+const fs = require('fs');
+const data = fs.readFileSync('config.json', 'utf8');
+const config = JSON.
+def merge_sort(arr):
+    if len(arr) <= 1:
+        return arr
+    mid = len(arr) //
+struct Point {
+    x: f64,
+    y: f64,
+}
+impl Point {
+    fn distance(&self, other: &Point) -> f64 {
+        ((self.x - other.x).powi(2) + (self.y - other.y).

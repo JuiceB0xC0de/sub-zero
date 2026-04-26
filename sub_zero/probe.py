@@ -54,6 +54,13 @@ class ProbeConfig:
     skip_unembedding_layer: bool = True
     skip_projections: Optional[List[str]] = None  # explicit override, else attention defaults
     skip_global_layers: Optional[List[int]] = None  # explicit override, else [0, n-1]
+    # Stage 8 — capability orthogonality fence
+    capability_fence: bool = True
+    capability_corpora: Optional[Dict[str, str]] = None  # name → filename in corpora_dir
+    capability_batch: int = 4
+    capability_damage_threshold: float = 0.15  # absolute |Δloss| in nats per token
+    capability_coupling_ratio: float = 0.40    # damage / |compliance_effect|
+    capability_max_prompts: int = 16
 
 
 def _read_lines(path: Path, max_items: int) -> List[str]:
@@ -742,6 +749,195 @@ def _das_refine(
 
 
 # ---------------------------------------------------------------------------
+# Stage 8 – capability orthogonality fence
+# ---------------------------------------------------------------------------
+
+DEFAULT_CAPABILITY_CORPORA = {
+    "code":         "code_probes.txt",
+    "math":         "math_probes.txt",
+    "factual":      "factual_probes.txt",
+    "reasoning":    "reasoning_probes.txt",
+    "multilingual": "multilingual_probes.txt",
+}
+
+
+def _capability_fence(
+    model: torch.nn.Module,
+    tokenizer,
+    layers: Sequence[torch.nn.Module],
+    atlas_layers: Dict[int, "LayerAtlas"],
+    proj_svd: Dict[int, Dict[str, Tuple[torch.Tensor, torch.Tensor, torch.Tensor]]],
+    corpora_dir: Path,
+    capability_corpora: Dict[str, str],
+    chat_template: bool,
+    chat_user_preamble: str,
+    max_length: int,
+    batch: int = 4,
+    max_prompts: int = 16,
+    damage_threshold: float = 0.15,
+    coupling_ratio: float = 0.40,
+) -> None:
+    """Reject DAS axes whose ablation damages capability domains (code, math, etc.).
+
+    For each surviving DAS rotated axis b_r in each (layer, projection):
+      Δ_C = |loss_ablated_C - loss_clean_C| for each capability corpus C
+      capability_damage = max_C(Δ_C)
+      if damage > damage_threshold OR damage / max(|compliance_effect|, ε) > coupling_ratio:
+          REJECT — set target_scale = 1.0 (no attenuation)
+      else: KEEP
+
+    The compliance_effect proxy uses the DAS axis's explained variance ratio as a
+    sign of how confident we were that this axis is compliance-related.
+    """
+    device = model_device(model)
+    if (
+        hasattr(tokenizer, "pad_token")
+        and getattr(tokenizer, "pad_token", None) is None
+        and getattr(tokenizer, "eos_token", None) is not None
+    ):
+        try:
+            tokenizer.pad_token = tokenizer.eos_token
+        except Exception:
+            pass
+
+    # Load + chat-template all capability corpora once
+    corpora_loaded: Dict[str, List[str]] = {}
+    for name, fname in capability_corpora.items():
+        prompts = _read_lines(corpora_dir / fname, max_prompts)
+        if not prompts:
+            print(f"  [capability] skipping {name}: file missing or empty ({fname})")
+            continue
+        if chat_template:
+            prompts = _apply_chat_template(prompts, role="model", user_preamble=chat_user_preamble)
+        corpora_loaded[name] = prompts[: max(1, batch)]
+    if not corpora_loaded:
+        print("  [capability] no corpora loaded — fence disabled")
+        return
+
+    def _enc(prompts):
+        e = tokenizer(list(prompts), return_tensors="pt", truncation=True,
+                      padding=True, max_length=max_length)
+        return {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in e.items()}
+
+    def _loss(enc):
+        with torch.no_grad():
+            out = model(**enc, use_cache=False)
+        logits = out.logits[..., :-1, :].float()
+        targets = enc["input_ids"][..., 1:]
+        return float(F.cross_entropy(
+            logits.reshape(-1, logits.shape[-1]), targets.reshape(-1), reduction="mean",
+        ).item())
+
+    encoded = {name: _enc(prompts) for name, prompts in corpora_loaded.items()}
+    clean_losses = {name: _loss(enc) for name, enc in encoded.items()}
+    print(
+        "  [capability] baselines: "
+        + ", ".join(f"{n}={v:.3f}" for n, v in clean_losses.items())
+    )
+
+    total_axes = 0
+    total_kept = 0
+    total_rejected = 0
+    by_corpus_total_rejections: Dict[str, int] = {n: 0 for n in clean_losses}
+
+    for li, layer_at in list(atlas_layers.items()):
+        if li not in proj_svd:
+            continue
+        for pname, projat in layer_at.per_projection.items():
+            if projat.bouncer_das_basis is None or projat.bouncer_das_target_scale is None:
+                continue
+            if pname not in proj_svd[li]:
+                continue
+            B = projat.bouncer_das_basis.detach().float()         # [r, in_dim]
+            scales = projat.bouncer_das_target_scale.detach().float()
+            explained = (
+                projat.bouncer_das_explained.detach().float()
+                if projat.bouncer_das_explained is not None
+                else torch.ones(B.shape[0])
+            )
+            r = B.shape[0]
+            pmod = get_projection_map(layers[li]).get(pname)
+            if pmod is None:
+                continue
+
+            damage_per_axis = torch.zeros(r)
+            profile: Dict[str, torch.Tensor] = {n: torch.zeros(r) for n in clean_losses}
+
+            for ri in range(r):
+                v_cpu = B[ri].clone()
+
+                def _pre_hook(_m, args, _v=v_cpu):
+                    if not args:
+                        return None
+                    x = args[0]
+                    if not isinstance(x, torch.Tensor):
+                        return None
+                    v_dt = _v.to(dtype=x.dtype, device=x.device)
+                    coeff = x @ v_dt
+                    proj = coeff.unsqueeze(-1) * v_dt
+                    return (x - proj,) + tuple(args[1:])
+
+                handle = pmod.register_forward_pre_hook(_pre_hook)
+                try:
+                    for name, enc in encoded.items():
+                        abl = _loss(enc)
+                        delta = abs(abl - clean_losses[name])
+                        profile[name][ri] = delta
+                        if delta > damage_per_axis[ri]:
+                            damage_per_axis[ri] = delta
+                finally:
+                    handle.remove()
+
+            # Decision per axis: reject if absolute damage exceeds threshold OR
+            # the damage/compliance ratio exceeds coupling threshold.
+            passed = torch.zeros(r, dtype=torch.bool)
+            for ri in range(r):
+                d = float(damage_per_axis[ri])
+                comp_proxy = max(float(explained[ri]), 1e-3)
+                ratio = d / comp_proxy
+                axis_passes = (d <= damage_threshold) and (ratio <= coupling_ratio)
+                passed[ri] = axis_passes
+                total_axes += 1
+                if axis_passes:
+                    total_kept += 1
+                else:
+                    total_rejected += 1
+                    # tally which corpus did the most damage
+                    worst = max(profile.items(), key=lambda kv: float(kv[1][ri]))[0]
+                    by_corpus_total_rejections[worst] = by_corpus_total_rejections.get(worst, 0) + 1
+
+            # Update target_scale: rejected axes become 1.0 (no attenuation)
+            new_scales = scales.clone()
+            for ri in range(r):
+                if not bool(passed[ri]):
+                    new_scales[ri] = 1.0
+
+            projat.bouncer_das_target_scale = new_scales
+            projat.bouncer_das_capability_profile = profile
+            projat.bouncer_das_capability_damage = damage_per_axis
+            projat.bouncer_das_capability_passed = passed
+
+            kept = int(passed.sum().item())
+            if kept != r or float(damage_per_axis.max()) > 0.05:
+                profile_str = ", ".join(
+                    f"{n}={float(damage_per_axis.max() if False else profile[n].max()):.3f}"
+                    for n in profile
+                )
+                print(
+                    f"  [capability | L{li:>2} | {pname:<8}] "
+                    f"r={r} kept={kept}  max_damage={float(damage_per_axis.max()):.3f}  "
+                    f"by_corpus[{profile_str}]"
+                )
+
+    print(
+        f"  [capability summary] axes total={total_axes} kept={total_kept} "
+        f"rejected={total_rejected} "
+        + ("rejection_attribution=" + ", ".join(f"{n}:{c}" for n, c in by_corpus_total_rejections.items() if c > 0)
+           if total_rejected else "all axes capability-orthogonal")
+    )
+
+
+# ---------------------------------------------------------------------------
 # Main build function
 # ---------------------------------------------------------------------------
 
@@ -1074,7 +1270,7 @@ def build_atlas(
         )
 
     if getattr(config, "das_refine", True):
-        print("[sub-zero] stage 7/7: DAS rotation gate ...")
+        print("[sub-zero] stage 7/8: DAS rotation gate ...")
         _das_refine(
             model, tokenizer, layers, atlas_layers, proj_svd,
             auth_prompts=auth,
@@ -1084,6 +1280,26 @@ def build_atlas(
             explained_floor=getattr(config, "das_explained_floor", 0.05),
             min_scale=getattr(config, "das_min_scale", 0.15),
             probe_token_ids=getattr(config, "das_probe_token_ids", None),
+        )
+
+    if getattr(config, "capability_fence", True):
+        print("[sub-zero] stage 8/8: capability orthogonality fence ...")
+        cap_corpora = (
+            config.capability_corpora
+            if config.capability_corpora is not None
+            else dict(DEFAULT_CAPABILITY_CORPORA)
+        )
+        _capability_fence(
+            model, tokenizer, layers, atlas_layers, proj_svd,
+            corpora_dir=corpora,
+            capability_corpora=cap_corpora,
+            chat_template=getattr(config, "chat_template", True),
+            chat_user_preamble=getattr(config, "chat_user_preamble", "respond."),
+            max_length=config.max_length,
+            batch=getattr(config, "capability_batch", 4),
+            max_prompts=getattr(config, "capability_max_prompts", 16),
+            damage_threshold=getattr(config, "capability_damage_threshold", 0.15),
+            coupling_ratio=getattr(config, "capability_coupling_ratio", 0.40),
         )
 
     atlas = BrainAtlas(
