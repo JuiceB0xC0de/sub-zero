@@ -45,6 +45,15 @@ class ProbeConfig:
     das_explained_floor: float = 0.05
     das_min_scale: float = 0.15
     das_probe_token_ids: Optional[List[int]] = None  # if set, project deltas to these tokens before SVD
+    # Gemma-style chat-template wrapping for corp/auth/neutral (model role) and red_team (user role)
+    chat_template: bool = True
+    chat_user_preamble: str = "respond."
+    # Bouncer scope filters — applied at SVD time, propagates through all downstream gates
+    skip_attention_projections: bool = True
+    skip_embedding_layer: bool = True
+    skip_unembedding_layer: bool = True
+    skip_projections: Optional[List[str]] = None  # explicit override, else attention defaults
+    skip_global_layers: Optional[List[int]] = None  # explicit override, else [0, n-1]
 
 
 def _read_lines(path: Path, max_items: int) -> List[str]:
@@ -77,6 +86,40 @@ def _unit_rows(v: torch.Tensor) -> torch.Tensor:
 def _angle_deg(a: torch.Tensor, b: torch.Tensor) -> float:
     dot = float(torch.clamp(torch.dot(_unit(a), _unit(b)), -1.0, 1.0))
     return float(torch.rad2deg(torch.arccos(torch.tensor(dot))).item())
+
+
+def _apply_chat_template(
+    prompts: Sequence[str],
+    role: str,
+    user_preamble: str = "respond.",
+) -> List[str]:
+    """Wrap prompts with Gemma chat-template tokens.
+
+    role='model':   prompt content sits inside the model turn (assistant continuation).
+                    Activations at the last token represent 'model is producing this'.
+    role='user':    prompt content is the user input; model turn is opened but empty.
+                    Activations at the last token represent 'model about to respond to this'.
+
+    The bouncer dimensions were RLHF-conditioned to fire at positions inside or
+    immediately following the model-role prefix. Plain text bypasses that conditioning
+    entirely, which is why pre-template baselines were 13+ nats per token.
+    """
+    out: List[str] = []
+    for p in prompts:
+        p = p.strip()
+        if role == "model":
+            out.append(
+                f"<bos><start_of_turn>user\n{user_preamble}<end_of_turn>\n"
+                f"<start_of_turn>model\n{p}"
+            )
+        elif role == "user":
+            out.append(
+                f"<bos><start_of_turn>user\n{p}<end_of_turn>\n"
+                f"<start_of_turn>model\n"
+            )
+        else:
+            out.append(p)
+    return out
 
 
 def _hist3(t: torch.Tensor) -> torch.Tensor:
@@ -723,10 +766,35 @@ def build_atlas(
     if not neu:
         neu = auth
 
+    if getattr(config, "chat_template", True):
+        preamble = getattr(config, "chat_user_preamble", "respond.")
+        print(f"[sub-zero] applying Gemma chat template (user_preamble={preamble!r}) ...")
+        corp = _apply_chat_template(corp, role="model", user_preamble=preamble)
+        auth = _apply_chat_template(auth, role="model", user_preamble=preamble)
+        neu  = _apply_chat_template(neu,  role="model", user_preamble=preamble)
+        red  = _apply_chat_template(red or [], role="user", user_preamble=preamble)
+
     layers   = resolve_layers(model)
     if config.layer_limit is not None:
         layers = layers[:config.layer_limit]
     n_layers = len(layers)
+
+    # Resolve scope filters: which (layer, projection) cells to entirely exclude.
+    skip_proj_set = set(
+        config.skip_projections if config.skip_projections is not None
+        else (["q_proj", "k_proj", "v_proj", "o_proj"]
+              if getattr(config, "skip_attention_projections", True) else [])
+    )
+    skip_layer_set: set = set(config.skip_global_layers or [])
+    if getattr(config, "skip_embedding_layer", True):
+        skip_layer_set.add(0)
+    if getattr(config, "skip_unembedding_layer", True):
+        skip_layer_set.add(n_layers - 1)
+    if skip_proj_set or skip_layer_set:
+        print(
+            f"[sub-zero] scope filter: skipping projections={sorted(skip_proj_set) or 'none'}, "
+            f"global layers={sorted(skip_layer_set) or 'none'}"
+        )
 
     print(f"[sub-zero] probing {n_layers} layers" + (f" (capped at {config.layer_limit})" if config.layer_limit else ""))
     print(f"[sub-zero] layer 17 module keys: {[n for n, _ in layers[min(17, n_layers-1)].named_modules()][:20]}")
@@ -753,8 +821,12 @@ def build_atlas(
     proj_svd: Dict[int, Dict[str, Tuple[torch.Tensor, torch.Tensor, torch.Tensor]]] = {}
     svd_device = model_device(model)
     for li in sacred_layers:
+        if li in skip_layer_set:
+            continue
         proj_svd[li] = {}
         for pname, pmod in get_projection_map(layers[li]).items():
+            if pname in skip_proj_set:
+                continue
             w = pmod.weight.detach()
             if w.ndim != 2 or min(w.shape) < 2:
                 continue

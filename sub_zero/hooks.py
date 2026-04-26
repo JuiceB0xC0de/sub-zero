@@ -60,6 +60,38 @@ class DimensionGradMask:
         return masked
 
 
+class DASGradMask:
+    """Project gradient out of the DAS bouncer subspace at training time.
+
+    The DAS basis B ∈ R^[r, d_in] is unit-normed but not necessarily orthogonal
+    (it is U^T @ vh[cand], where U has orthonormal columns but vh[cand] rows
+    are independent unit vectors). For a true subspace projector we need an
+    orthonormal basis spanning span(B) — QR(B^T) gives us exactly that.
+
+    For weight grad of shape [d_out, d_in]:
+        grad_new = grad - (grad @ Q) @ Q^T
+    where Q has orthonormal columns spanning the bouncer subspace.
+    """
+
+    def __init__(self, das_basis: torch.Tensor):
+        B = das_basis.detach().float()
+        if B.numel() == 0:
+            self.Q = B
+            return
+        try:
+            Q, _ = torch.linalg.qr(B.T)        # Q: [d_in, r'], orthonormal columns
+        except Exception:
+            # Degenerate basis (rank-deficient) — fall back to row-normalized B^T
+            Q = B.T / B.T.norm(dim=0, keepdim=True).clamp(min=1e-12)
+        self.Q = Q.detach()
+
+    def __call__(self, grad: torch.Tensor) -> torch.Tensor:
+        if self.Q.numel() == 0:
+            return grad
+        Q = self.Q.to(device=grad.device, dtype=grad.dtype)
+        return grad - (grad @ Q) @ Q.transpose(0, 1)
+
+
 def install_weight_grad_hook(module: torch.nn.Module, hook_fn) -> torch.utils.hooks.RemovableHandle:
     if not hasattr(module, "weight"):
         raise AttributeError(f"Module {module.__class__.__name__} has no weight")
