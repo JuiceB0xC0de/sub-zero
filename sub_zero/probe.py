@@ -18,10 +18,10 @@ from .propagation import trace_origin_layers
 @dataclass
 class ProbeConfig:
     corpora_dir: str
-    corporate_file: str = "corporate_stems.txt"
-    neutral_file: str = "neutral_stems.txt"
-    authentic_file: str = "authentic_bella_samples.txt"
-    red_team_file: str = "red_team_stems.txt"
+    corporate_file: str = "corporate_stems.jsonl"
+    neutral_file: str = "neutral_stems.jsonl"
+    authentic_file: str = "authentic_bella_samples.jsonl"
+    red_team_file: str = "red_team_stems.jsonl"
     max_prompts_per_class: int = 32
     max_length: int = 256
     batch_size: int = 8
@@ -46,7 +46,8 @@ class ProbeConfig:
     das_min_scale: float = 0.15
     das_probe_token_ids: Optional[List[int]] = None  # if set, project deltas to these tokens before SVD
     # Gemma-style chat-template wrapping for corp/auth/neutral (model role) and red_team (user role)
-    chat_template: bool = True
+    # False by default because JSONL corpora already have the template baked in
+    chat_template: bool = False
     chat_user_preamble: str = "respond."
     # Bouncer scope filters — applied at SVD time, propagates through all downstream gates
     skip_attention_projections: bool = True
@@ -66,7 +67,20 @@ class ProbeConfig:
 def _read_lines(path: Path, max_items: int) -> List[str]:
     if not path.exists():
         return []
-    lines = [ln.strip() for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    raw = path.read_text(encoding="utf-8").splitlines()
+    if path.suffix == ".jsonl":
+        import json
+        lines = []
+        for ln in raw:
+            ln = ln.strip()
+            if not ln:
+                continue
+            try:
+                lines.append(json.loads(ln)["text"])
+            except (json.JSONDecodeError, KeyError):
+                lines.append(ln)
+    else:
+        lines = [ln.strip() for ln in raw if ln.strip()]
     return lines[:max_items]
 
 
@@ -753,11 +767,11 @@ def _das_refine(
 # ---------------------------------------------------------------------------
 
 DEFAULT_CAPABILITY_CORPORA = {
-    "code":         "code_probes.txt",
-    "math":         "math_probes.txt",
-    "factual":      "factual_probes.txt",
-    "reasoning":    "reasoning_probes.txt",
-    "multilingual": "multilingual_probes.txt",
+    "code":         "code_probes.jsonl",
+    "math":         "math_probes.jsonl",
+    "factual":      "factual_probes.jsonl",
+    "reasoning":    "reasoning_probes.jsonl",
+    "multilingual": "multilingual_probes.jsonl",
 }
 
 
