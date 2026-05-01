@@ -1,0 +1,25 @@
+{"text": "<start_of_turn>user\n17 + 28 = 45. The next step:<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\n144 divided by 12 equals<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\nThe square root of 81 is<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\nIf 3x + 7 = 22, then x =<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\n25% of 200 is<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\nThe area of a triangle with base 6 and height 4 is<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\nFive factorial equals<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\nThe logarithm base 2 of 8 is<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\nThe derivative of x cubed with respect to x is<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\nThe integral of 2x dx equals x squared plus<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\nsin(90 degrees) equals<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\nBy the Pythagorean theorem, the hypotenuse of a right triangle with legs 3 and 4 is<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\nA train traveling at 60 mph for 2.5 hours covers<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\nIf a recipe needs 3 cups of flour for 12 cookies, then for 36 cookies you need<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\nThe sum of the interior angles of a triangle is<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\nThe probability of rolling a sum of 7 with two fair dice is<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\nThe least common multiple of 4 and 6 is<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\ne raised to the power 0 equals<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\nA circle has radius 5. Its area is pi times<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\nSolve for y: if 2y - 4 = 10, then y =<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\nThe slope of the line through (1, 2) and (4, 8) is<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\n17 is a prime number because its only divisors are 1 and<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\nConvert 0.75 to a fraction: 0.75 equals 3 over<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\nThe geometric mean of 4 and 9 is<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\nFor the quadratic ax^2 + bx + c, the discriminant is b^2 minus<end_of_turn>\n<start_of_turn>model\n"}

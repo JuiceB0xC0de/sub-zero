@@ -1,0 +1,63 @@
+{"text": "<start_of_turn>user\ndef is_prime(n):<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\nif n < 2:<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\nreturn False<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\nfor i in range(2, int(n**0.5) + 1):<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\nif n % i == 0:<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\nreturn<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\ndef fibonacci(n):<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\nif n <= 1:<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\nreturn n<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\nreturn fibonacci(n - 1) +<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\ndef reverse_string(s: str) -> str:<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\nreturn s[::<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\nclass Stack:<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\ndef __init__(self):<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\nself.items = []<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\ndef push(self, item):<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\nself.items.<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\ndef binary_search(arr, target):<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\nleft, right = 0, len(arr) -<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\nimport numpy as np<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\narr = np.array([[1, 2], [3, 4]])<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\nprint(arr.<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\nasync function fetchUser(id) {<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\nconst response = await fetch(`/api/users/${id}`);<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\nreturn response.<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\nconst numbers = [1, 2, 3, 4, 5];<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\nconst doubled = numbers.map(n =><end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\npublic class Calculator {<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\npublic int add(int a, int b) {<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\nreturn a +<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\nSELECT name, age FROM users WHERE age >= 18 ORDER BY<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\ndef factorial(n):<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\nreturn 1 if n == 0 else n * factorial(n -<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\nwith open('data.txt', 'r') as f:<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\nlines = f.read<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\nimport torch<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\nx = torch.randn(3, 4)<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\ny = x.transpose(0,<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\ndef quicksort(arr):<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\nif len(arr) <= 1:<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\nreturn arr<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\npivot = arr[len(arr) //<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\nHashMap<String, Integer> counts = new HashMap<>();<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\ncounts.put(\"apple\",<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\ntype Result<T, E> = { ok: true; value: T } | { ok: false; error:<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\ndef matrix_multiply(a, b):<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\nrows_a, cols_a = len(a), len(a[0])<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\nrows_b, cols_b = len(b), len(b[<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\ngit commit -m \"fix: handle empty input in<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\nconst fs = require('fs');<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\nconst data = fs.readFileSync('config.json', 'utf8');<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\nconst config = JSON.<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\ndef merge_sort(arr):<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\nif len(arr) <= 1:<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\nreturn arr<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\nmid = len(arr) //<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\nstruct Point {<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\nx: f64,<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\ny: f64,<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\n}<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\nimpl Point {<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\nfn distance(&self, other: &Point) -> f64 {<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\n((self.x - other.x).powi(2) + (self.y - other.y).<end_of_turn>\n<start_of_turn>model\n"}

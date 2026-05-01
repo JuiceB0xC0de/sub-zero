@@ -1,0 +1,24 @@
+{"text": "<start_of_turn>user\nAll mammals are warm-blooded. Whales are mammals. Therefore whales are<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\nIf A is greater than B and B is greater than C, then A is greater than<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\nA square has four equal sides. A rhombus has four equal sides. Therefore a square is a special kind of<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\nAll roses are flowers. Some flowers fade quickly. Therefore some roses<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\nIf it rains, the ground gets wet. The ground is wet. The ground being wet does not necessarily mean it<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\nJohn is taller than Mary. Mary is taller than Sue. The shortest of the three is<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\nAll birds lay eggs. A platypus lays eggs. Therefore a platypus is not necessarily a<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\nIf today is Monday, then in three days it will be<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\nIf x + y = 10 and x = 3, then y =<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\nSix pencils cost $1.20. The cost of one pencil is<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\nFive apples cost $2. Therefore fifteen apples cost<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\nA standard deck has 52 cards. If you draw 13 cards, you have one<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\nAlice has twice as many books as Bob. Bob has 5 books. Alice has<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\nEvery dog has fur. Rex has no fur. Therefore Rex is not a<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\nIf P implies Q and P is true, then Q must be<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\nThe contrapositive of \"if it rains, the picnic is canceled\" is \"if the picnic is not canceled, then it<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\nThree friends share 12 cookies equally. Each friend gets<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\nA car traveling 60 mph for 30 minutes covers a distance of<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\nThe next number in the sequence 2, 4, 8, 16 is<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\nAll squares are rectangles, but not all rectangles are squares. Therefore a square is a more specific type of<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\nSocrates is a man. All men are mortal. Therefore Socrates is<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\nIf a triangle has two equal sides, it is called<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\nA prime number greater than 2 must be<end_of_turn>\n<start_of_turn>model\n"}
+{"text": "<start_of_turn>user\nThe sum of two even numbers is always<end_of_turn>\n<start_of_turn>model\n"}
